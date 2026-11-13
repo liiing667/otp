@@ -99,6 +99,17 @@ func GenerateCodeCustom(secret string, t time.Time, opts ValidateOpts) (passcode
 // ValidateCustom validates a TOTP given a user specified time and custom options.
 // Most users should use Validate() to provide an interpolatable TOTP experience.
 func ValidateCustom(passcode string, secret string, t time.Time, opts ValidateOpts) (bool, error) {
+	_, rv, err := ValidateCustomCounter(passcode, secret, t, opts)
+	return rv, err
+}
+
+// ValidateCustomCounter behaves exactly like ValidateCustom, but it also
+// returns the time-step counter that matched the passcode, including any
+// counter reached through the configured Skew window. A caller persisting
+// the last consumed counter can reject replays by refusing any passcode
+// whose matched counter is less than or equal to the one already consumed.
+// When validation fails the returned counter is 0 and the boolean is false.
+func ValidateCustomCounter(passcode string, secret string, t time.Time, opts ValidateOpts) (uint64, bool, error) {
 	if opts.Period == 0 {
 		opts.Period = 30
 	}
@@ -113,21 +124,21 @@ func ValidateCustom(passcode string, secret string, t time.Time, opts ValidateOp
 	}
 
 	for _, counter := range counters {
-		rv, err := hotp.ValidateCustom(passcode, counter, secret, hotp.ValidateOpts{
+		matched, rv, err := hotp.ValidateCustomCounter(passcode, counter, secret, hotp.ValidateOpts{
 			Digits:    opts.Digits,
 			Algorithm: opts.Algorithm,
 			Encoder:   opts.Encoder,
 		})
 		if err != nil {
-			return false, err
+			return 0, false, err
 		}
 
 		if rv == true {
-			return true, nil
+			return matched, true, nil
 		}
 	}
 
-	return false, nil
+	return 0, false, nil
 }
 
 // GenerateOpts provides options for Generate().  The default values

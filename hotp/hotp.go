@@ -147,22 +147,32 @@ func GenerateCodeCustom(secret string, counter uint64, opts ValidateOpts) (passc
 // ValidateCustom validates an HOTP with customizable options. Most users should
 // use Validate().
 func ValidateCustom(passcode string, counter uint64, secret string, opts ValidateOpts) (bool, error) {
+	_, ok, err := ValidateCustomCounter(passcode, counter, secret, opts)
+	return ok, err
+}
+
+// ValidateCustomCounter behaves exactly like ValidateCustom, but it also
+// returns the counter that matched the passcode. A caller persisting the
+// last consumed counter can reject replays by refusing any passcode whose
+// matched counter is less than or equal to the one already consumed.
+// When validation fails the returned counter is 0 and the boolean is false.
+func ValidateCustomCounter(passcode string, counter uint64, secret string, opts ValidateOpts) (uint64, bool, error) {
 	passcode = strings.TrimSpace(passcode)
 
 	if len(passcode) != opts.Digits.Length() {
-		return false, otp.ErrValidateInputInvalidLength
+		return 0, false, otp.ErrValidateInputInvalidLength
 	}
 
 	otpstr, err := GenerateCodeCustom(secret, counter, opts)
 	if err != nil {
-		return false, err
+		return 0, false, err
 	}
 
 	if subtle.ConstantTimeCompare([]byte(otpstr), []byte(passcode)) == 1 {
-		return true, nil
+		return counter, true, nil
 	}
 
-	return false, nil
+	return 0, false, nil
 }
 
 // GenerateOpts provides options for .Generate()

@@ -23,6 +23,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"encoding/base32"
+	"math"
 	"testing"
 	"time"
 )
@@ -197,4 +198,114 @@ func TestSteamSecret(t *testing.T) {
 	valid, err := ValidateCustom(code, w.Secret(), n, opts)
 	require.NoError(t, err)
 	require.True(t, valid)
+}
+
+func TestValidateCustomCounterRFCMatrix(t *testing.T) {
+	for _, tx := range rfcMatrixTCs {
+		opts := ValidateOpts{
+			Digits:    otp.DigitsEight,
+			Algorithm: tx.Mode,
+		}
+		expected := uint64(math.Floor(float64(tx.TS) / float64(30)))
+
+		counter, valid, err := ValidateCustomCounter(tx.TOTP, tx.Secret, time.Unix(tx.TS, 0).UTC(), opts)
+		require.NoError(t, err,
+			"unexpected error totp=%s mode=%v ts=%v", tx.TOTP, tx.Mode, tx.TS)
+		require.True(t, valid,
+			"unexpected totp failure totp=%s mode=%v ts=%v", tx.TOTP, tx.Mode, tx.TS)
+		require.Equal(t, expected, counter,
+			"matched time-step counter should be reported back totp=%s", tx.TOTP)
+	}
+}
+
+func TestValidateCustomCounterSkew(t *testing.T) {
+	opts := ValidateOpts{
+		Digits:    otp.DigitsEight,
+		Algorithm: otp.AlgorithmSHA1,
+		Skew:      1,
+	}
+
+	// The passcode 94287082 is generated for time-step 1 (TS 59), but the
+	// validation time TS 89 belongs to time-step 2. With Skew of 1 the
+	// previous step still matches, and the matched counter must be reported.
+	baseCounter := uint64(1)
+	tests := []struct {
+		ts      int64
+		current uint64
+		matched uint64
+	}{
+		{29, 0, 1},  // next time-step accepted via skew
+		{59, 1, 1},  // current time-step
+		{89, 2, 1},  // previous time-step accepted via skew
+	}
+
+	for _, tx := range tests {
+		counter, valid, err := ValidateCustomCounter("94287082", secSha1, time.Unix(tx.ts, 0).UTC(), opts)
+		require.NoError(t, err, "unexpected error at ts=%v", tx.ts)
+		require.True(t, valid, "unexpected totp failure at ts=%v", tx.ts)
+		require.Equal(t, tx.matched, counter, "matched counter at ts=%v", tx.ts)
+		require.Equal(t, baseCounter, counter, "same code must resolve to the same time-step")
+		require.Equal(t, tx.current, uint64(tx.ts/30), "sanity check of the current time-step")
+	}
+}
+
+func TestValidateCustomCounterNoMatch(t *testing.T) {
+	counter, valid, err := ValidateCustomCounter("00000000", secSha1, time.Unix(59, 0).UTC(),
+		ValidateOpts{
+			Digits:    otp.DigitsEight,
+			Algorithm: otp.AlgorithmSHA1,
+		})
+	require.NoError(t, err, "Expected no error.")
+	require.False(t, valid, "Valid should be false.")
+	require.Equal(t, uint64(0), counter, "Counter should be zero when no match is found.")
+}
+
+func TestValidateCustomCounterErrorClassification(t *testing.T) {
+	counter, valid, err := ValidateCustomCounter("foo", secSha1, time.Unix(59, 0).UTC(),
+		ValidateOpts{
+			Digits:    otp.DigitsEight,
+			Algorithm: otp.AlgorithmSHA1,
+		})
+	require.Equal(t, otp.ErrValidateInputInvalidLength, err, "Expected Invalid length error.")
+	require.False(t, valid, "Valid should be false when we have an error.")
+	require.Equal(t, uint64(0), counter, "Counter should be zero when we have an error.")
+}
+
+func TestValidateCustomCounterReplayProtection(t *testing.T) {
+	opts := ValidateOpts{
+		Period:    30,
+		Skew:      1,
+		Digits:    otp.DigitsEight,
+		Algorithm: otp.AlgorithmSHA1,
+	}
+
+	// Generate a code for time-step 10 and validate it while on time-step 11,
+	// exercising the skew window. The server persists the matched counter (10).
+	code, err := GenerateCodeCustom(secSha1, time.Unix(10*30, 0).UTC(), opts)
+	require.NoError(t, err)
+
+	lastConsumed, valid, err := ValidateCustomCounter(code, secSha1, time.Unix(11*30, 0).UTC(), opts)
+	require.NoError(t, err)
+	require.True(t, valid)
+	require.Equal(t, uint64(10), lastConsumed)
+
+	// Re-submitting the same passcode while still inside the validity/skew
+	// window succeeds at the library level, but the server can now reject it
+	// because the matched counter is not greater than the consumed one.
+	matched, valid, err := ValidateCustomCounter(code, secSha1, time.Unix(11*30, 0).UTC(), opts)
+	require.NoError(t, err)
+	require.True(t, valid)
+	require.Equal(t, lastConsumed, matched)
+	require.True(t, matched <= lastConsumed,
+		"replayed passcode must be rejectable via the persisted counter %v", lastConsumed)
+
+	// A fresh time-step produces a strictly greater, acceptable counter.
+	nextCode, err := GenerateCodeCustom(secSha1, time.Unix(12*30, 0).UTC(), opts)
+	require.NoError(t, err)
+	matched, valid, err = ValidateCustomCounter(nextCode, secSha1, time.Unix(12*30, 0).UTC(), opts)
+	require.NoError(t, err)
+	require.True(t, valid)
+	require.Equal(t, uint64(12), matched)
+	require.True(t, matched > lastConsumed,
+		"next counter %v must exceed the consumed counter %v", matched, lastConsumed)
 }

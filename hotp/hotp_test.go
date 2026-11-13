@@ -143,6 +143,84 @@ func TestValidateLowerCaseSecret(t *testing.T) {
 	require.Equal(t, true, valid, "Valid should be true.")
 }
 
+func TestValidateCustomCounter(t *testing.T) {
+	for _, tx := range rfcMatrixTCs {
+		counter, valid, err := ValidateCustomCounter(tx.TOTP, tx.Counter, tx.Secret,
+			ValidateOpts{
+				Digits:    otp.DigitsSix,
+				Algorithm: tx.Mode,
+			})
+		require.NoError(t, err,
+			"unexpected error totp=%s mode=%v counter=%v", tx.TOTP, tx.Mode, tx.Counter)
+		require.True(t, valid,
+			"unexpected totp failure totp=%s mode=%v counter=%v", tx.TOTP, tx.Mode, tx.Counter)
+		require.Equal(t, tx.Counter, counter, "matched counter should be reported back")
+	}
+}
+
+func TestValidateCustomCounterNoMatch(t *testing.T) {
+	counter, valid, err := ValidateCustomCounter("000000", 11, secSha1,
+		ValidateOpts{
+			Digits:    otp.DigitsSix,
+			Algorithm: otp.AlgorithmSHA1,
+		})
+	require.NoError(t, err, "Expected no error.")
+	require.False(t, valid, "Valid should be false.")
+	require.Equal(t, uint64(0), counter, "Counter should be zero when no match is found.")
+}
+
+func TestValidateCustomCounterErrorClassification(t *testing.T) {
+	counter, valid, err := ValidateCustomCounter("foo", 11, secSha1,
+		ValidateOpts{
+			Digits:    otp.DigitsSix,
+			Algorithm: otp.AlgorithmSHA1,
+		})
+	require.Equal(t, otp.ErrValidateInputInvalidLength, err, "Expected Invalid length error.")
+	require.False(t, valid, "Valid should be false when we have an error.")
+	require.Equal(t, uint64(0), counter, "Counter should be zero when we have an error.")
+
+	counter, valid, err = ValidateCustomCounter("755224", 0, "foo",
+		ValidateOpts{
+			Digits:    otp.DigitsSix,
+			Algorithm: otp.AlgorithmSHA1,
+		})
+	require.Equal(t, otp.ErrValidateSecretInvalidBase32, err, "Expected base32 decoding error.")
+	require.False(t, valid, "Valid should be false when we have an error.")
+	require.Equal(t, uint64(0), counter, "Counter should be zero when we have an error.")
+}
+
+func TestValidateCustomCounterReplayProtection(t *testing.T) {
+	opts := ValidateOpts{
+		Digits:    otp.DigitsSix,
+		Algorithm: otp.AlgorithmSHA1,
+	}
+
+	// First presentation of counter 4 is accepted and its counter is persisted.
+	lastConsumed, valid, err := ValidateCustomCounter("338314", 4, secSha1, opts)
+	require.NoError(t, err)
+	require.True(t, valid)
+	require.Equal(t, uint64(4), lastConsumed)
+
+	// Replaying the same, or an older, counter must be rejected by the server.
+	for _, replay := range []uint64{4, 3, 0} {
+		code, err := GenerateCodeCustom(secSha1, replay, opts)
+		require.NoError(t, err)
+		matched, valid, err := ValidateCustomCounter(code, replay, secSha1, opts)
+		require.NoError(t, err)
+		require.True(t, valid, "library still validates the code itself")
+		require.True(t, matched <= lastConsumed,
+			"replayed counter %v must not exceed the consumed counter %v", matched, lastConsumed)
+	}
+
+	// A strictly greater counter remains acceptable.
+	matched, valid, err := ValidateCustomCounter("254676", 5, secSha1, opts)
+	require.NoError(t, err)
+	require.True(t, valid)
+	require.Equal(t, uint64(5), matched)
+	require.True(t, matched > lastConsumed,
+		"next counter %v must exceed the consumed counter %v", matched, lastConsumed)
+}
+
 func TestGenerate(t *testing.T) {
 	k, err := Generate(GenerateOpts{
 		Issuer:      "SnakeOil",
