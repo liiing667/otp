@@ -44,6 +44,37 @@ For an example of a working enrollment work flow, [GitHub has documented theirs]
 1. Retrieve the User's TOTP Secret from your backend.
 1. Validate the user's passcode. `totp.Validate(...)`
 
+### Replay-safe validation
+
+The stateless `Validate` functions only report whether a passcode matches;
+they cannot stop the same passcode from being accepted twice. For login
+protection use the concurrency safe `Validator` types, which atomically
+consume the matched HOTP counter or TOTP time-step and reject every replay
+without advancing their state:
+
+```go
+// HOTP: owns the server-side counter. SetWindow tolerates skipped counters.
+hotpValidator := hotp.NewValidator(secret, counter, hotp.ValidateOpts{
+    Digits:    otp.DigitsSix,
+    Algorithm: otp.AlgorithmSHA1,
+})
+valid, consumedCounter, err := hotpValidator.Validate(passcode)
+// Persist hotpValidator.Counter() after a successful login.
+
+// TOTP: remembers the last consumed time-step across the skew window.
+totpValidator := totp.NewValidator(secret, totp.ValidateOpts{
+    Period:    30,
+    Skew:      1,
+    Digits:    otp.DigitsSix,
+    Algorithm: otp.AlgorithmSHA1,
+})
+valid, matchedCounter, err := totpValidator.Validate(passcode, time.Now().UTC())
+// A second presentation of the same code returns otp.ErrCodeReplayed.
+```
+
+Both validators are safe for concurrent use; under parallel logins exactly
+one call can consume a given counter or time-step.
+
 
 ### Recovery Codes
 

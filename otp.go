@@ -40,6 +40,12 @@ var ErrValidateSecretInvalidBase32 = errors.New("Decoding of secret as base32 fa
 // The user provided passcode length was not expected.
 var ErrValidateInputInvalidLength = errors.New("Input length unexpected")
 
+// ErrCodeReplayed is returned by a stateful Validator when the presented
+// passcode matches a one-time code that has already been consumed. The
+// Validator's state is left untouched, so a replay attempt never advances
+// the HOTP counter or the consumed TOTP time-step.
+var ErrCodeReplayed = errors.New("Passcode has already been used")
+
 // When generating a Key, the Issuer must be set.
 var ErrGenerateMissingIssuer = errors.New("Issuer must be set")
 
