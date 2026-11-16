@@ -78,15 +78,15 @@ func TestGenerateRFCMatrix(t *testing.T) {
 	}
 }
 
-func TestGenerateCodeCustom(t *testing.T){
+func TestGenerateCodeCustom(t *testing.T) {
 	secSha1 := base32.StdEncoding.EncodeToString([]byte("12345678901234567890"))
 
-	code, err := GenerateCodeCustom("foo",1,ValidateOpts{})
+	code, err := GenerateCodeCustom("foo", 1, ValidateOpts{})
 	print(code)
 	require.Equal(t, otp.ErrValidateSecretInvalidBase32, err, "Decoding of secret as base32 failed.")
 	require.Equal(t, "", code, "Code should be empty string when we have an error.")
 
-	code, err = GenerateCodeCustom(secSha1,1,ValidateOpts{})
+	code, err = GenerateCodeCustom(secSha1, 1, ValidateOpts{})
 	require.Equal(t, 6, len(code), "Code should be 6 digits when we have not an error.")
 	require.NoError(t, err, "Expected no error.")
 }
@@ -98,7 +98,7 @@ func TestValidateInvalid(t *testing.T) {
 		ValidateOpts{
 			Digits:    otp.DigitsSix,
 			Algorithm: otp.AlgorithmSHA1,
-	})
+		})
 	require.Equal(t, otp.ErrValidateInputInvalidLength, err, "Expected Invalid length error.")
 	require.Equal(t, false, valid, "Valid should be false when we have an error.")
 
@@ -120,6 +120,102 @@ func TestValidateInvalid(t *testing.T) {
 
 	valid = Validate("000000", 11, secSha1)
 	require.Equal(t, false, valid, "Valid should be false.")
+}
+
+func TestValidateDigitsOutOfRange(t *testing.T) {
+	secSha1 := base32.StdEncoding.EncodeToString([]byte("12345678901234567890"))
+
+	for _, digits := range []otp.Digits{-1, 1, 20, otp.DigitsMaximum + 1} {
+		_, err := GenerateCodeCustom(secSha1, 0, ValidateOpts{
+			Digits:    digits,
+			Algorithm: otp.AlgorithmSHA1,
+		})
+		require.Equal(t, otp.ErrValidateDigitsOutOfRange, err,
+			"digits=%v must be rejected on generation", digits)
+
+		valid, err := ValidateCustom("000000", 0, secSha1, ValidateOpts{
+			Digits:    digits,
+			Algorithm: otp.AlgorithmSHA1,
+		})
+		require.Equal(t, false, valid, "digits=%v must not validate", digits)
+		require.Equal(t, otp.ErrValidateDigitsOutOfRange, err,
+			"digits=%v must be rejected on validation", digits)
+
+		_, err = Generate(GenerateOpts{
+			Issuer:      "SnakeOil",
+			AccountName: "alice@example.com",
+			Digits:      digits,
+			Algorithm:   otp.AlgorithmSHA1,
+		})
+		require.Equal(t, otp.ErrValidateDigitsOutOfRange, err,
+			"digits=%v must be rejected when generating a key", digits)
+	}
+}
+
+func TestValidateAlgorithmInvalid(t *testing.T) {
+	secSha1 := base32.StdEncoding.EncodeToString([]byte("12345678901234567890"))
+
+	_, err := GenerateCodeCustom(secSha1, 0, ValidateOpts{
+		Digits:    otp.DigitsSix,
+		Algorithm: otp.Algorithm(99),
+	})
+	require.Equal(t, otp.ErrValidateAlgorithmInvalid, err)
+
+	valid, err := ValidateCustom("000000", 0, secSha1, ValidateOpts{
+		Digits:    otp.DigitsSix,
+		Algorithm: otp.Algorithm(99),
+	})
+	require.Equal(t, false, valid)
+	require.Equal(t, otp.ErrValidateAlgorithmInvalid, err)
+
+	_, err = Generate(GenerateOpts{
+		Issuer:      "SnakeOil",
+		AccountName: "alice@example.com",
+		Algorithm:   otp.Algorithm(99),
+	})
+	require.Equal(t, otp.ErrValidateAlgorithmInvalid, err)
+}
+
+func TestValidateNonNumericPasscode(t *testing.T) {
+	secSha1 := base32.StdEncoding.EncodeToString([]byte("12345678901234567890"))
+
+	for _, passcode := range []string{"abcdef", "12a456", "-12345", "12.345"} {
+		valid, err := ValidateCustom(passcode, 0, secSha1, ValidateOpts{
+			Digits:    otp.DigitsSix,
+			Algorithm: otp.AlgorithmSHA1,
+		})
+		require.Equal(t, false, valid, "passcode=%q must not validate", passcode)
+		require.Equal(t, otp.ErrValidateInputNonNumeric, err,
+			"passcode=%q must be reported non-numeric", passcode)
+	}
+}
+
+func TestDefaultsCompatible(t *testing.T) {
+	secSha1 := base32.StdEncoding.EncodeToString([]byte("12345678901234567890"))
+
+	// Zero-valued Digits still resolves to the Google-Authenticator default of 6.
+	code, err := GenerateCodeCustom(secSha1, 0, ValidateOpts{})
+	require.NoError(t, err)
+	require.Len(t, code, int(otp.DigitsSix))
+
+	valid, err := ValidateCustom(code, 0, secSha1, ValidateOpts{})
+	require.NoError(t, err)
+	require.True(t, valid)
+
+	// The shortcut helpers keep producing the RFC 4226 test vector.
+	code, err = GenerateCode(secSha1, 0)
+	require.NoError(t, err)
+	require.Equal(t, "755224", code)
+	require.True(t, Validate(code, 0, secSha1))
+
+	// A generated key keeps the Google-Authenticator defaults.
+	k, err := Generate(GenerateOpts{
+		Issuer:      "SnakeOil",
+		AccountName: "alice@example.com",
+	})
+	require.NoError(t, err)
+	require.Equal(t, otp.DigitsSix, k.Digits())
+	require.Equal(t, otp.AlgorithmSHA1, k.Algorithm())
 }
 
 // This tests for issue #10 - secrets without padding

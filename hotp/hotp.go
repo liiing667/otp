@@ -28,7 +28,6 @@ import (
 	"encoding/base32"
 	"encoding/binary"
 	"fmt"
-	"math"
 	"net/url"
 	"strings"
 )
@@ -74,9 +73,17 @@ func GenerateCode(secret string, counter uint64) (string, error) {
 // GenerateCodeCustom uses a counter and secret value and options struct to
 // create a passcode.
 func GenerateCodeCustom(secret string, counter uint64, opts ValidateOpts) (passcode string, err error) {
-	//Set default value
+	// Set default value. An explicitly zero Digits means "not specified", so
+	// the Google-Authenticator compatible default is applied; any other value
+	// outside the supported range is rejected instead of silently clamped.
 	if opts.Digits == 0 {
 		opts.Digits = otp.DigitsSix
+	}
+	if !opts.Digits.Valid() {
+		return "", otp.ErrValidateDigitsOutOfRange
+	}
+	if !opts.Algorithm.Valid() {
+		return "", otp.ErrValidateAlgorithmInvalid
 	}
 	// As noted in issue #10 and #17 this adds support for TOTP secrets that are
 	// missing their padding.
@@ -116,7 +123,14 @@ func GenerateCodeCustom(secret string, counter uint64, opts ValidateOpts) (passc
 	l := opts.Digits.Length()
 	switch opts.Encoder {
 	case otp.EncoderDefault:
-		mod := int32(value % int64(math.Pow10(l)))
+		// Compute 10^l with integer arithmetic. Digits.Valid() guarantees l is
+		// small enough that neither the power nor the int32 conversion can
+		// overflow, avoiding the undefined behavior of math.Pow10 at large l.
+		modulo := int64(1)
+		for i := 0; i < l; i++ {
+			modulo *= 10
+		}
+		mod := int32(value % modulo)
 
 		if debug {
 			fmt.Printf("offset=%v\n", offset)
@@ -149,8 +163,31 @@ func GenerateCodeCustom(secret string, counter uint64, opts ValidateOpts) (passc
 func ValidateCustom(passcode string, counter uint64, secret string, opts ValidateOpts) (bool, error) {
 	passcode = strings.TrimSpace(passcode)
 
+	// Validate the option ranges up front so invalid parameters produce a
+	// distinguishable error instead of a panic or silently generated code.
+	if opts.Digits == 0 {
+		opts.Digits = otp.DigitsSix
+	}
+	if !opts.Digits.Valid() {
+		return false, otp.ErrValidateDigitsOutOfRange
+	}
+	if !opts.Algorithm.Valid() {
+		return false, otp.ErrValidateAlgorithmInvalid
+	}
+
 	if len(passcode) != opts.Digits.Length() {
 		return false, otp.ErrValidateInputInvalidLength
+	}
+
+	// The default encoder emits numeric passcodes; reject anything else so a
+	// non-numeric input cannot pass comparison by length alone. The Steam
+	// encoder uses a wider alphabet and is only length-checked.
+	if opts.Encoder == otp.EncoderDefault {
+		for i := 0; i < len(passcode); i++ {
+			if passcode[i] < '0' || passcode[i] > '9' {
+				return false, otp.ErrValidateInputNonNumeric
+			}
+		}
 	}
 
 	otpstr, err := GenerateCodeCustom(secret, counter, opts)
@@ -202,6 +239,14 @@ func Generate(opts GenerateOpts) (*otp.Key, error) {
 
 	if opts.Digits == 0 {
 		opts.Digits = otp.DigitsSix
+	}
+
+	if !opts.Digits.Valid() {
+		return nil, otp.ErrValidateDigitsOutOfRange
+	}
+
+	if !opts.Algorithm.Valid() {
+		return nil, otp.ErrValidateAlgorithmInvalid
 	}
 
 	if opts.Rand == nil {

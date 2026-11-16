@@ -40,6 +40,18 @@ var ErrValidateSecretInvalidBase32 = errors.New("Decoding of secret as base32 fa
 // The user provided passcode length was not expected.
 var ErrValidateInputInvalidLength = errors.New("Input length unexpected")
 
+// The user provided passcode was not composed entirely of digits.
+var ErrValidateInputNonNumeric = errors.New("Passcode must contain only digits")
+
+// The number of OTP digits was outside of the supported range.
+var ErrValidateDigitsOutOfRange = errors.New("Digits out of range")
+
+// The TOTP period was outside of the supported range.
+var ErrValidatePeriodOutOfRange = errors.New("Period out of range")
+
+// The hashing algorithm was not one of the supported values.
+var ErrValidateAlgorithmInvalid = errors.New("Algorithm out of range")
+
 // When generating a Key, the Issuer must be set.
 var ErrGenerateMissingIssuer = errors.New("Issuer must be set")
 
@@ -56,7 +68,6 @@ type Key struct {
 //
 // The URL format is documented here:
 //   https://github.com/google/google-authenticator/wiki/Key-Uri-Format
-//
 func NewKeyFromURL(orig string) (*Key, error) {
 	s := strings.TrimSpace(orig)
 
@@ -224,6 +235,16 @@ func (a Algorithm) String() string {
 	panic("unreached")
 }
 
+// Valid reports whether the Algorithm is one of the supported values.
+func (a Algorithm) Valid() bool {
+	switch a {
+	case AlgorithmSHA1, AlgorithmSHA256, AlgorithmSHA512, AlgorithmMD5:
+		return true
+	default:
+		return false
+	}
+}
+
 func (a Algorithm) Hash() hash.Hash {
 	switch a {
 	case AlgorithmSHA1:
@@ -246,6 +267,20 @@ const (
 	DigitsSix   Digits = 6
 	DigitsEight Digits = 8
 )
+
+// Bounds on the number of OTP digits accepted by Generate and Validate.
+// The lower bound keeps the passcode from becoming trivially brute-forceable
+// (see RFC 4226), while the upper bound guarantees the modulo operation used
+// during code generation stays well within machine integer limits.
+const (
+	DigitsMinimum Digits = 5
+	DigitsMaximum Digits = 8
+)
+
+// Valid reports whether the Digits value is inside the supported range.
+func (d Digits) Valid() bool {
+	return d >= DigitsMinimum && d <= DigitsMaximum
+}
 
 // Format converts an integer into the zero-filled size for this Digits.
 func (d Digits) Format(in int32) string {

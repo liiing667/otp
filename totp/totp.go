@@ -31,6 +31,27 @@ import (
 	"time"
 )
 
+// Bounds on the TOTP period (in seconds) accepted by Generate and Validate.
+// The lower bound keeps the period meaningful, and the upper bound rejects
+// values that would make a TOTP code effectively never rotate.
+const (
+	periodMinimum uint = 1
+	periodMaximum uint = 86400
+)
+
+func validateOpts(opts ValidateOpts) error {
+	if !opts.Digits.Valid() {
+		return otp.ErrValidateDigitsOutOfRange
+	}
+	if !opts.Algorithm.Valid() {
+		return otp.ErrValidateAlgorithmInvalid
+	}
+	if opts.Period < periodMinimum || opts.Period > periodMaximum {
+		return otp.ErrValidatePeriodOutOfRange
+	}
+	return nil
+}
+
 // Validate a TOTP using the current time.
 // A shortcut for ValidateCustom, Validate uses a configuration
 // that is compatible with Google-Authenticator and most clients.
@@ -84,6 +105,12 @@ func GenerateCodeCustom(secret string, t time.Time, opts ValidateOpts) (passcode
 	if opts.Period == 0 {
 		opts.Period = 30
 	}
+	if opts.Digits == 0 {
+		opts.Digits = otp.DigitsSix
+	}
+	if err = validateOpts(opts); err != nil {
+		return "", err
+	}
 	counter := uint64(math.Floor(float64(t.Unix()) / float64(opts.Period)))
 	passcode, err = hotp.GenerateCodeCustom(secret, counter, hotp.ValidateOpts{
 		Digits:    opts.Digits,
@@ -101,6 +128,13 @@ func GenerateCodeCustom(secret string, t time.Time, opts ValidateOpts) (passcode
 func ValidateCustom(passcode string, secret string, t time.Time, opts ValidateOpts) (bool, error) {
 	if opts.Period == 0 {
 		opts.Period = 30
+	}
+	if opts.Digits == 0 {
+		opts.Digits = otp.DigitsSix
+	}
+
+	if err := validateOpts(opts); err != nil {
+		return false, err
 	}
 
 	counters := []uint64{}
@@ -174,6 +208,18 @@ func Generate(opts GenerateOpts) (*otp.Key, error) {
 
 	if opts.Digits == 0 {
 		opts.Digits = otp.DigitsSix
+	}
+
+	if !opts.Digits.Valid() {
+		return nil, otp.ErrValidateDigitsOutOfRange
+	}
+
+	if !opts.Algorithm.Valid() {
+		return nil, otp.ErrValidateAlgorithmInvalid
+	}
+
+	if opts.Period < periodMinimum || opts.Period > periodMaximum {
+		return nil, otp.ErrValidatePeriodOutOfRange
 	}
 
 	if opts.Rand == nil {
