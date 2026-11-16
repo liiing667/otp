@@ -118,6 +118,74 @@ func TestValidateSkew(t *testing.T) {
 	}
 }
 
+func TestValidateCustomWithResult(t *testing.T) {
+	secret := base32.StdEncoding.EncodeToString([]byte("12345678901234567890"))
+	base := time.Unix(1111111111, 0).UTC()
+	baseCounter := uint64(1111111111) / 30
+	opts := ValidateOpts{
+		Period:    30,
+		Skew:      2,
+		Digits:    otp.DigitsEight,
+		Algorithm: otp.AlgorithmSHA1,
+	}
+
+	// hit on the current step
+	code, err := GenerateCodeCustom(secret, base, opts)
+	require.NoError(t, err)
+	r := ValidateCustomWithResult(code, secret, base, opts)
+	require.True(t, r.Valid, "current-step code should validate.")
+	require.Equal(t, baseCounter, r.Counter, "Counter should be the current time step.")
+	require.Equal(t, 0, r.Offset, "Offset should be zero for the current step.")
+	require.Equal(t, otp.FailureNone, r.Failure)
+
+	// hit on a past step (client clock behind)
+	code, err = GenerateCodeCustom(secret, base.Add(-30*time.Second), opts)
+	require.NoError(t, err)
+	r = ValidateCustomWithResult(code, secret, base, opts)
+	require.True(t, r.Valid, "past-step code should validate within skew.")
+	require.Equal(t, baseCounter-1, r.Counter, "Counter should be the previous time step.")
+	require.Equal(t, -1, r.Offset, "Offset should be -1 for a past step.")
+
+	// hit on a future step (client clock ahead)
+	code, err = GenerateCodeCustom(secret, base.Add(30*time.Second), opts)
+	require.NoError(t, err)
+	r = ValidateCustomWithResult(code, secret, base, opts)
+	require.True(t, r.Valid, "future-step code should validate within skew.")
+	require.Equal(t, baseCounter+1, r.Counter, "Counter should be the next time step.")
+	require.Equal(t, 1, r.Offset, "Offset should be +1 for a future step.")
+
+	// well-formed but wrong code
+	r = ValidateCustomWithResult("00000000", secret, base, opts)
+	require.False(t, r.Valid, "Valid should be false for a mismatch.")
+	require.Equal(t, otp.FailureCodeMismatch, r.Failure, "Failure should classify a mismatch.")
+	require.NoError(t, r.Err, "Err should be nil for a plain mismatch.")
+
+	// invalid secret
+	r = ValidateCustomWithResult("00000000", "foo", base, opts)
+	require.False(t, r.Valid, "Valid should be false for a bad secret.")
+	require.Equal(t, otp.FailureInvalidSecret, r.Failure, "Failure should classify a bad secret.")
+	require.Equal(t, otp.ErrValidateSecretInvalidBase32, r.Err)
+
+	// invalid input length
+	r = ValidateCustomWithResult("123", secret, base, opts)
+	require.False(t, r.Valid, "Valid should be false for a bad length.")
+	require.Equal(t, otp.FailureInvalidInputLength, r.Failure, "Failure should classify a bad length.")
+	require.Equal(t, otp.ErrValidateInputInvalidLength, r.Err)
+
+	// skew beyond the safety bound is rejected, not silently expanded
+	wide := opts
+	wide.Skew = MaxSkew + 1
+	r = ValidateCustomWithResult("00000000", secret, base, wide)
+	require.False(t, r.Valid, "Valid should be false when skew exceeds MaxSkew.")
+	require.Equal(t, otp.FailureSkewExceeded, r.Failure, "Failure should classify excessive skew.")
+	require.Equal(t, otp.ErrValidateSkewExceeded, r.Err)
+
+	// the legacy signature surfaces the same skew error
+	valid, err := ValidateCustom("00000000", secret, base, wide)
+	require.False(t, valid)
+	require.Equal(t, otp.ErrValidateSkewExceeded, err)
+}
+
 func TestGenerate(t *testing.T) {
 	k, err := Generate(GenerateOpts{
 		Issuer:      "SnakeOil",

@@ -147,22 +147,47 @@ func GenerateCodeCustom(secret string, counter uint64, opts ValidateOpts) (passc
 // ValidateCustom validates an HOTP with customizable options. Most users should
 // use Validate().
 func ValidateCustom(passcode string, counter uint64, secret string, opts ValidateOpts) (bool, error) {
+	r := ValidateCustomWithResult(passcode, counter, secret, opts)
+	return r.Valid, r.Err
+}
+
+// Result describes the outcome of ValidateCustomWithResult.
+type Result struct {
+	// Valid is true when the passcode matched the expected code.
+	Valid bool
+	// Failure classifies why validation failed; FailureNone when Valid is true.
+	Failure otp.FailureReason
+	// Err carries the underlying error for configuration/input failures
+	// (invalid secret, invalid length). It is nil for a plain code mismatch.
+	Err error
+}
+
+// ValidateCustomWithResult validates an HOTP and returns a structured result
+// that distinguishes an invalid secret, an invalid input length and a code
+// mismatch. The comparison itself remains constant-time.
+func ValidateCustomWithResult(passcode string, counter uint64, secret string, opts ValidateOpts) Result {
 	passcode = strings.TrimSpace(passcode)
 
 	if len(passcode) != opts.Digits.Length() {
-		return false, otp.ErrValidateInputInvalidLength
+		return Result{
+			Failure: otp.FailureInvalidInputLength,
+			Err:     otp.ErrValidateInputInvalidLength,
+		}
 	}
 
 	otpstr, err := GenerateCodeCustom(secret, counter, opts)
 	if err != nil {
-		return false, err
+		return Result{
+			Failure: otp.FailureInvalidSecret,
+			Err:     err,
+		}
 	}
 
 	if subtle.ConstantTimeCompare([]byte(otpstr), []byte(passcode)) == 1 {
-		return true, nil
+		return Result{Valid: true}
 	}
 
-	return false, nil
+	return Result{Failure: otp.FailureCodeMismatch}
 }
 
 // GenerateOpts provides options for .Generate()

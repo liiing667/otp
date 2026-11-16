@@ -143,6 +143,37 @@ func TestValidateLowerCaseSecret(t *testing.T) {
 	require.Equal(t, true, valid, "Valid should be true.")
 }
 
+func TestValidateCustomWithResult(t *testing.T) {
+	opts := ValidateOpts{
+		Digits:    otp.DigitsSix,
+		Algorithm: otp.AlgorithmSHA1,
+	}
+
+	// invalid secret
+	r := ValidateCustomWithResult("287082", 1, "foo", opts)
+	require.False(t, r.Valid, "Valid should be false for a bad secret.")
+	require.Equal(t, otp.FailureInvalidSecret, r.Failure, "Failure should classify a bad secret.")
+	require.Equal(t, otp.ErrValidateSecretInvalidBase32, r.Err, "Err should carry the base32 decoding error.")
+
+	// invalid input length
+	r = ValidateCustomWithResult("12345", 1, secSha1, opts)
+	require.False(t, r.Valid, "Valid should be false for a bad length.")
+	require.Equal(t, otp.FailureInvalidInputLength, r.Failure, "Failure should classify a bad length.")
+	require.Equal(t, otp.ErrValidateInputInvalidLength, r.Err, "Err should carry the length error.")
+
+	// well-formed but wrong code
+	r = ValidateCustomWithResult("000000", 1, secSha1, opts)
+	require.False(t, r.Valid, "Valid should be false for a mismatch.")
+	require.Equal(t, otp.FailureCodeMismatch, r.Failure, "Failure should classify a mismatch.")
+	require.NoError(t, r.Err, "Err should be nil for a plain mismatch.")
+
+	// hit
+	r = ValidateCustomWithResult("287082", 1, secSha1, opts)
+	require.True(t, r.Valid, "Valid should be true for the RFC 4226 code at counter 1.")
+	require.Equal(t, otp.FailureNone, r.Failure, "Failure should be none on a hit.")
+	require.NoError(t, r.Err, "Err should be nil on a hit.")
+}
+
 func TestGenerate(t *testing.T) {
 	k, err := Generate(GenerateOpts{
 		Issuer:      "SnakeOil",

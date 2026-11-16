@@ -40,11 +40,52 @@ var ErrValidateSecretInvalidBase32 = errors.New("Decoding of secret as base32 fa
 // The user provided passcode length was not expected.
 var ErrValidateInputInvalidLength = errors.New("Input length unexpected")
 
+// The configured Skew exceeds the maximum allowed value (totp.MaxSkew).
+var ErrValidateSkewExceeded = errors.New("Skew exceeds the maximum allowed value")
+
 // When generating a Key, the Issuer must be set.
 var ErrGenerateMissingIssuer = errors.New("Issuer must be set")
 
 // When generating a Key, the Account Name must be set.
 var ErrGenerateMissingAccountName = errors.New("AccountName must be set")
+
+// FailureReason classifies why an OTP validation failed, so callers can
+// distinguish a misconfigured secret from a malformed input or a simple
+// code mismatch (e.g. for auditing and replay protection).
+type FailureReason int
+
+const (
+	// FailureNone indicates validation succeeded.
+	FailureNone FailureReason = iota
+	// FailureInvalidInputLength indicates the passcode length did not
+	// match the expected number of digits.
+	FailureInvalidInputLength
+	// FailureInvalidSecret indicates the secret could not be decoded
+	// (e.g. it is not valid base32).
+	FailureInvalidSecret
+	// FailureCodeMismatch indicates a well-formed passcode that did not
+	// match any candidate counter.
+	FailureCodeMismatch
+	// FailureSkewExceeded indicates the configured Skew is larger than
+	// the allowed maximum.
+	FailureSkewExceeded
+)
+
+func (r FailureReason) String() string {
+	switch r {
+	case FailureNone:
+		return "none"
+	case FailureInvalidInputLength:
+		return "invalid input length"
+	case FailureInvalidSecret:
+		return "invalid secret"
+	case FailureCodeMismatch:
+		return "code mismatch"
+	case FailureSkewExceeded:
+		return "skew exceeded"
+	}
+	return "unknown"
+}
 
 // Key represents an TOTP or HTOP key.
 type Key struct {

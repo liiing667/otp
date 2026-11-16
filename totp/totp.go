@@ -67,7 +67,9 @@ type ValidateOpts struct {
 	Period uint
 	// Periods before or after the current time to allow.  Value of 1 allows up to Period
 	// of either side of the specified time.  Defaults to 0 allowed skews.  Values greater
-	// than 1 are likely sketchy.
+	// than 1 are likely sketchy.  Values greater than MaxSkew are rejected with
+	// otp.ErrValidateSkewExceeded, bounding validation to at most 2*MaxSkew+1
+	// candidate windows per request.
 	Skew uint
 	// Digits as part of the input. Defaults to 6.
 	Digits otp.Digits
@@ -76,6 +78,12 @@ type ValidateOpts struct {
 	// Encoder to use for output code.
 	Encoder otp.Encoder
 }
+
+// MaxSkew is the maximum accepted value for ValidateOpts.Skew.  Each unit of
+// skew adds two candidate windows (one past, one future) to every validation
+// request, so the bound keeps the work per request -- and the acceptance
+// window an attacker can probe -- limited to 2*MaxSkew+1 periods.
+const MaxSkew = 10
 
 // GenerateCodeCustom takes a timepoint and produces a passcode using a
 // secret and the provided opts. (Under the hood, this is making an adapted
@@ -99,35 +107,74 @@ func GenerateCodeCustom(secret string, t time.Time, opts ValidateOpts) (passcode
 // ValidateCustom validates a TOTP given a user specified time and custom options.
 // Most users should use Validate() to provide an interpolatable TOTP experience.
 func ValidateCustom(passcode string, secret string, t time.Time, opts ValidateOpts) (bool, error) {
+	r := ValidateCustomWithResult(passcode, secret, t, opts)
+	return r.Valid, r.Err
+}
+
+// Result describes the outcome of ValidateCustomWithResult.
+type Result struct {
+	// Valid is true when the passcode matched a candidate time step.
+	Valid bool
+	// Counter is the matched time step (t.Unix()/Period).  Only meaningful
+	// when Valid is true; usable for replay protection.
+	Counter uint64
+	// Offset is the signed distance, in periods, between the validated
+	// time's step and the matched step: negative for a past step, positive
+	// for a future step, zero for the current step.
+	Offset int
+	// Failure classifies why validation failed; FailureNone when Valid is true.
+	Failure otp.FailureReason
+	// Err carries the underlying error for configuration/input failures
+	// (invalid secret, invalid length, skew exceeded).  It is nil for a
+	// plain code mismatch.
+	Err error
+}
+
+// ValidateCustomWithResult validates a TOTP and returns a structured result:
+// failures are classified by category, and a successful match reports the
+// matched time step and its offset direction.
+func ValidateCustomWithResult(passcode string, secret string, t time.Time, opts ValidateOpts) Result {
 	if opts.Period == 0 {
 		opts.Period = 30
 	}
 
-	counters := []uint64{}
-	counter := int64(math.Floor(float64(t.Unix()) / float64(opts.Period)))
-
-	counters = append(counters, uint64(counter))
-	for i := 1; i <= int(opts.Skew); i++ {
-		counters = append(counters, uint64(counter+int64(i)))
-		counters = append(counters, uint64(counter-int64(i)))
+	if opts.Skew > MaxSkew {
+		return Result{
+			Failure: otp.FailureSkewExceeded,
+			Err:     otp.ErrValidateSkewExceeded,
+		}
 	}
 
-	for _, counter := range counters {
-		rv, err := hotp.ValidateCustom(passcode, counter, secret, hotp.ValidateOpts{
+	counter := int64(math.Floor(float64(t.Unix()) / float64(opts.Period)))
+
+	offsets := []int{0}
+	for i := 1; i <= int(opts.Skew); i++ {
+		offsets = append(offsets, i, -i)
+	}
+
+	for _, offset := range offsets {
+		matched := uint64(counter + int64(offset))
+		rv := hotp.ValidateCustomWithResult(passcode, matched, secret, hotp.ValidateOpts{
 			Digits:    opts.Digits,
 			Algorithm: opts.Algorithm,
 			Encoder:   opts.Encoder,
 		})
-		if err != nil {
-			return false, err
+		if rv.Valid {
+			return Result{
+				Valid:   true,
+				Counter: matched,
+				Offset:  offset,
+			}
 		}
-
-		if rv == true {
-			return true, nil
+		if rv.Failure != otp.FailureCodeMismatch {
+			return Result{
+				Failure: rv.Failure,
+				Err:     rv.Err,
+			}
 		}
 	}
 
-	return false, nil
+	return Result{Failure: otp.FailureCodeMismatch}
 }
 
 // GenerateOpts provides options for Generate().  The default values
