@@ -125,20 +125,17 @@ func GenerateCodeCustom(secret string, counter uint64, opts ValidateOpts) (passc
 		}
 		passcode = opts.Digits.Format(mod)
 	case otp.EncoderSteam:
-		// Define the character set used by Steam Guard codes.
-		alphabet := []byte{
-			'2', '3', '4', '5', '6', '7', '8', '9', 'B', 'C',
-			'D', 'F', 'G', 'H', 'J', 'K', 'M', 'N', 'P', 'Q',
-			'R', 'T', 'V', 'W', 'X', 'Y',
-		}
-		radix := int64(len(alphabet))
+		// Steam Guard alphabet, shared with key/URI generation in the otp package.
+		radix := int64(len(otp.SteamChars))
 
 		for i := 0; i < l; i++ {
 			digit := value % radix
 			value /= radix
-			c := alphabet[digit]
+			c := otp.SteamChars[digit]
 			passcode += string(c)
 		}
+	default:
+		return "", otp.ErrUnsupportedEncoder
 	}
 
 	return
@@ -171,7 +168,8 @@ type GenerateOpts struct {
 	Issuer string
 	// Name of the User's Account (eg, email address)
 	AccountName string
-	// Size in size of the generated Secret. Defaults to 10 bytes.
+	// Size in bytes of the generated Secret. Defaults to otp.DefaultSecretSize (20 bytes).
+	// Values below otp.MinSecretSize (16 bytes) are rejected.
 	SecretSize uint
 	// Secret to store. Defaults to a randomly generated secret of SecretSize.  You should generally leave this empty.
 	Secret []byte
@@ -179,6 +177,8 @@ type GenerateOpts struct {
 	Digits otp.Digits
 	// Algorithm to use for HMAC. Defaults to SHA1.
 	Algorithm otp.Algorithm
+	// Encoder to use for output code. Defaults to the numeric RFC 4226 encoder.
+	Encoder otp.Encoder
 	// Reader to use for generating HOTP Key.
 	Rand io.Reader
 }
@@ -196,10 +196,6 @@ func Generate(opts GenerateOpts) (*otp.Key, error) {
 		return nil, otp.ErrGenerateMissingAccountName
 	}
 
-	if opts.SecretSize == 0 {
-		opts.SecretSize = 10
-	}
-
 	if opts.Digits == 0 {
 		opts.Digits = otp.DigitsSix
 	}
@@ -208,23 +204,26 @@ func Generate(opts GenerateOpts) (*otp.Key, error) {
 		opts.Rand = rand.Reader
 	}
 
+	if err := internal.ValidateEncoding(opts.Encoder, opts.Digits); err != nil {
+		return nil, err
+	}
+
+	secret, err := internal.PrepareSecret(opts.Secret, opts.SecretSize, opts.Rand)
+	if err != nil {
+		return nil, err
+	}
+
 	// otpauth://hotp/Example:alice@google.com?secret=JBSWY3DPEHPK3PXP&issuer=Example
 
 	v := url.Values{}
-	if len(opts.Secret) != 0 {
-		v.Set("secret", b32NoPadding.EncodeToString(opts.Secret))
-	} else {
-		secret := make([]byte, opts.SecretSize)
-		_, err := io.ReadFull(opts.Rand, secret)
-		if err != nil {
-			return nil, err
-		}
-		v.Set("secret", b32NoPadding.EncodeToString(secret))
-	}
+	v.Set("secret", b32NoPadding.EncodeToString(secret))
 
 	v.Set("issuer", opts.Issuer)
 	v.Set("algorithm", opts.Algorithm.String())
 	v.Set("digits", opts.Digits.String())
+	if opts.Encoder != otp.EncoderDefault {
+		v.Set("encoder", string(opts.Encoder))
+	}
 
 	u := url.URL{
 		Scheme:   "otpauth",

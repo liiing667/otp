@@ -23,6 +23,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"encoding/base32"
+	"io"
 	"testing"
 	"time"
 )
@@ -146,7 +147,7 @@ func TestGenerate(t *testing.T) {
 	k, err = Generate(GenerateOpts{
 		Issuer:      "SnakeOil",
 		AccountName: "alice@example.com",
-		SecretSize:  13, // anything that is not divisible by 5, really
+		SecretSize:  17, // >= MinSecretSize and not divisible by 5, really
 	})
 	require.NoError(t, err, "Secret size is valid when length not divisible by 5.")
 	require.NotContains(t, k.Secret(), "=", "Secret has no escaped characters.")
@@ -154,12 +155,97 @@ func TestGenerate(t *testing.T) {
 	k, err = Generate(GenerateOpts{
 		Issuer:      "SnakeOil",
 		AccountName: "alice@example.com",
-		Secret:      []byte("helloworld"),
+		Secret:      []byte("helloworld-16byte"),
 	})
 	require.NoError(t, err, "Secret generation failed")
 	sec, err := b32NoPadding.DecodeString(k.Secret())
 	require.NoError(t, err, "Secret wa not valid base32")
-	require.Equal(t, sec, []byte("helloworld"), "Specified Secret was not kept")
+	require.Equal(t, sec, []byte("helloworld-16byte"), "Specified Secret was not kept")
+}
+
+func TestGenerateRejectsWeakSecrets(t *testing.T) {
+	k, err := Generate(GenerateOpts{
+		Issuer:      "SnakeOil",
+		AccountName: "alice@example.com",
+		Secret:      []byte("helloworld"), // 10 bytes
+	})
+	require.Equal(t, otp.ErrWeakSecretSize, err, "short caller secret rejected")
+	require.Nil(t, k, "key should be nil on error.")
+
+	k, err = Generate(GenerateOpts{
+		Issuer:      "SnakeOil",
+		AccountName: "alice@example.com",
+		SecretSize:  otp.MinSecretSize - 1,
+	})
+	require.Equal(t, otp.ErrWeakSecretSize, err, "small SecretSize rejected")
+	require.Nil(t, k, "key should be nil on error.")
+
+	k, err = Generate(GenerateOpts{
+		Issuer:      "SnakeOil",
+		AccountName: "alice@example.com",
+		SecretSize:  otp.MinSecretSize,
+	})
+	require.NoError(t, err, "MinSecretSize is a valid secret size.")
+	sec, err := b32NoPadding.DecodeString(k.Secret())
+	require.NoError(t, err)
+	require.Len(t, sec, otp.MinSecretSize, "Secret is exactly MinSecretSize bytes.")
+}
+
+type zeroReader struct{}
+
+func (zeroReader) Read(p []byte) (int, error) {
+	return 0, io.EOF
+}
+
+func TestGenerateRandShortReadFails(t *testing.T) {
+	k, err := Generate(GenerateOpts{
+		Issuer:      "SnakeOil",
+		AccountName: "alice@example.com",
+		Rand:        zeroReader{},
+	})
+	require.Error(t, err, "short random read rejected")
+	require.Nil(t, k, "key should be nil on error.")
+}
+
+func TestGenerateEncodingPolicy(t *testing.T) {
+	// Steam requires five digits and the encoder must reach the otpauth URI.
+	k, err := Generate(GenerateOpts{
+		Issuer:      "Steam",
+		AccountName: "alice@example.com",
+		Digits:      otp.DigitsFive,
+		Encoder:     otp.EncoderSteam,
+	})
+	require.NoError(t, err, "steam encoder with five digits accepted")
+	require.Equal(t, otp.EncoderSteam, k.Encoder(), "encoder preserved on the key")
+	require.Contains(t, k.String(), "encoder=steam", "encoder exported into the otpauth URI")
+	require.Equal(t, otp.DigitsFive, k.Digits(), "digits preserved on the key")
+
+	code, err := GenerateCodeCustom(k.Secret(), time.Now().UTC(), ValidateOpts{
+		Period:    uint(k.Period()),
+		Digits:    k.Digits(),
+		Encoder:   k.Encoder(),
+	})
+	require.NoError(t, err, "generated steam key produces a passcode")
+	require.Len(t, code, otp.DigitsFive.Length(), "steam passcode is five characters")
+	for _, c := range code {
+		require.Contains(t, otp.SteamChars, string(c), "passcode only uses the shared Steam alphabet")
+	}
+
+	k, err = Generate(GenerateOpts{
+		Issuer:      "Steam",
+		AccountName: "alice@example.com",
+		Encoder:     otp.EncoderSteam,
+	})
+	require.Equal(t, otp.ErrInvalidDigits, err, "steam encoder requires five digits")
+	require.Nil(t, k, "key should be nil on error.")
+
+	k, err = Generate(GenerateOpts{
+		Issuer:      "SnakeOil",
+		AccountName: "alice@example.com",
+		Encoder:     otp.Encoder("rot13"),
+	})
+	require.Equal(t, otp.ErrUnsupportedEncoder, err, "unknown encoder rejected")
+	require.Nil(t, k, "key should be nil on error.")
 }
 
 func TestGoogleLowerCaseSecret(t *testing.T) {

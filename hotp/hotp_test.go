@@ -23,6 +23,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"encoding/base32"
+	"io"
 	"testing"
 )
 
@@ -122,6 +123,17 @@ func TestValidateInvalid(t *testing.T) {
 	require.Equal(t, false, valid, "Valid should be false.")
 }
 
+func TestGenerateCodeCustomUnsupportedEncoder(t *testing.T) {
+	// An unknown encoder must return an error instead of an empty passcode.
+	code, err := GenerateCodeCustom(secSha1, 0, ValidateOpts{
+		Digits:    otp.DigitsSix,
+		Algorithm: otp.AlgorithmSHA1,
+		Encoder:   otp.Encoder("rot13"),
+	})
+	require.Equal(t, otp.ErrUnsupportedEncoder, err, "unknown encoder rejected")
+	require.Equal(t, "", code, "Code should be empty string when we have an error.")
+}
+
 // This tests for issue #10 - secrets without padding
 func TestValidatePadding(t *testing.T) {
 	valid, err := ValidateCustom("831097", 0, "JBSWY3DPEHPK3PX",
@@ -151,7 +163,8 @@ func TestGenerate(t *testing.T) {
 	require.NoError(t, err, "generate basic HOTP")
 	require.Equal(t, "SnakeOil", k.Issuer(), "Extracting Issuer")
 	require.Equal(t, "alice@example.com", k.AccountName(), "Extracting Account Name")
-	require.Equal(t, 16, len(k.Secret()), "Secret is 16 bytes long as base32.")
+	require.Equal(t, 32, len(k.Secret()), "Default secret is otp.DefaultSecretSize (20 bytes -> 32 base32 chars).")
+	require.Equal(t, otp.EncoderDefault, k.Encoder(), "Default encoder is the numeric RFC encoder.")
 
 	k, err = Generate(GenerateOpts{
 		Issuer:      "Snake Oil",
@@ -185,7 +198,7 @@ func TestGenerate(t *testing.T) {
 	k, err = Generate(GenerateOpts{
 		Issuer:      "SnakeOil",
 		AccountName: "alice@example.com",
-		SecretSize:  17, // anything that is not divisible by 5, really
+		SecretSize:  17, // >= MinSecretSize and not divisible by 5, really
 	})
 	require.NoError(t, err, "Secret size is valid when length not divisible by 5.")
 	require.NotContains(t, k.Secret(), "=", "Secret has no escaped characters.")
@@ -193,10 +206,91 @@ func TestGenerate(t *testing.T) {
 	k, err = Generate(GenerateOpts{
 		Issuer:      "SnakeOil",
 		AccountName: "alice@example.com",
-		Secret:      []byte("helloworld"),
+		Secret:      []byte("helloworld-16byte"),
 	})
 	require.NoError(t, err, "Secret generation failed")
 	sec, err := b32NoPadding.DecodeString(k.Secret())
 	require.NoError(t, err, "Secret was not valid base32")
-	require.Equal(t, sec, []byte("helloworld"), "Specified Secret was not kept")
+	require.Equal(t, sec, []byte("helloworld-16byte"), "Specified Secret was not kept")
+}
+
+func TestGenerateRejectsWeakSecrets(t *testing.T) {
+	// A caller supplied secret below the 128-bit floor must fail closed.
+	k, err := Generate(GenerateOpts{
+		Issuer:      "SnakeOil",
+		AccountName: "alice@example.com",
+		Secret:      []byte("helloworld"), // 10 bytes
+	})
+	require.Equal(t, otp.ErrWeakSecretSize, err, "short caller secret rejected")
+	require.Nil(t, k, "key should be nil on error.")
+
+	// Requesting a random secret below the floor must fail closed.
+	k, err = Generate(GenerateOpts{
+		Issuer:      "SnakeOil",
+		AccountName: "alice@example.com",
+		SecretSize:  otp.MinSecretSize - 1,
+	})
+	require.Equal(t, otp.ErrWeakSecretSize, err, "small SecretSize rejected")
+	require.Nil(t, k, "key should be nil on error.")
+
+	// The floor itself remains accepted.
+	k, err = Generate(GenerateOpts{
+		Issuer:      "SnakeOil",
+		AccountName: "alice@example.com",
+		SecretSize:  otp.MinSecretSize,
+	})
+	require.NoError(t, err, "MinSecretSize is a valid secret size.")
+	sec, err := b32NoPadding.DecodeString(k.Secret())
+	require.NoError(t, err)
+	require.Len(t, sec, otp.MinSecretSize, "Secret is exactly MinSecretSize bytes.")
+}
+
+func TestGenerateRandShortReadFails(t *testing.T) {
+	// A reader that never returns data must surface an error rather than a
+	// partially randomized secret ending up in the otpauth URI / QR code.
+	k, err := Generate(GenerateOpts{
+		Issuer:      "SnakeOil",
+		AccountName: "alice@example.com",
+		Rand:        zeroReader{},
+	})
+	require.Error(t, err, "short random read rejected")
+	require.Nil(t, k, "key should be nil on error.")
+}
+
+type zeroReader struct{}
+
+func (zeroReader) Read(p []byte) (int, error) {
+	return 0, io.EOF
+}
+
+func TestGenerateEncodingPolicy(t *testing.T) {
+	// Steam requires five digits and exports its encoder into the URI.
+	k, err := Generate(GenerateOpts{
+		Issuer:      "Steam",
+		AccountName: "alice@example.com",
+		Digits:      otp.DigitsFive,
+		Encoder:     otp.EncoderSteam,
+	})
+	require.NoError(t, err, "steam encoder with five digits accepted")
+	require.Equal(t, otp.EncoderSteam, k.Encoder(), "encoder preserved on the key")
+	require.Contains(t, k.String(), "encoder=steam", "encoder exported into the otpauth URI")
+	require.Equal(t, otp.DigitsFive, k.Digits(), "digits preserved on the key")
+
+	// Steam is not valid with the default six digit length.
+	k, err = Generate(GenerateOpts{
+		Issuer:      "Steam",
+		AccountName: "alice@example.com",
+		Encoder:     otp.EncoderSteam,
+	})
+	require.Equal(t, otp.ErrInvalidDigits, err, "steam encoder requires five digits")
+	require.Nil(t, k, "key should be nil on error.")
+
+	// Unknown encoders fail closed instead of producing empty passcodes.
+	k, err = Generate(GenerateOpts{
+		Issuer:      "SnakeOil",
+		AccountName: "alice@example.com",
+		Encoder:     otp.Encoder("rot13"),
+	})
+	require.Equal(t, otp.ErrUnsupportedEncoder, err, "unknown encoder rejected")
+	require.Nil(t, k, "key should be nil on error.")
 }

@@ -139,7 +139,8 @@ type GenerateOpts struct {
 	AccountName string
 	// Number of seconds a TOTP hash is valid for. Defaults to 30 seconds.
 	Period uint
-	// Size in bytes of the generated Secret. Defaults to 20 bytes.
+	// Size in bytes of the generated Secret. Defaults to otp.DefaultSecretSize (20 bytes).
+	// Values below otp.MinSecretSize (16 bytes) are rejected.
 	SecretSize uint
 	// Secret to store. Defaults to a randomly generated secret of SecretSize.  You should generally leave this empty.
 	Secret []byte
@@ -147,6 +148,8 @@ type GenerateOpts struct {
 	Digits otp.Digits
 	// Algorithm to use for HMAC. Defaults to SHA1.
 	Algorithm otp.Algorithm
+	// Encoder to use for output code. Defaults to the numeric RFC 6238 encoder.
+	Encoder otp.Encoder
 	// Reader to use for generating TOTP Key.
 	Rand io.Reader
 }
@@ -168,10 +171,6 @@ func Generate(opts GenerateOpts) (*otp.Key, error) {
 		opts.Period = 30
 	}
 
-	if opts.SecretSize == 0 {
-		opts.SecretSize = 20
-	}
-
 	if opts.Digits == 0 {
 		opts.Digits = otp.DigitsSix
 	}
@@ -180,24 +179,27 @@ func Generate(opts GenerateOpts) (*otp.Key, error) {
 		opts.Rand = rand.Reader
 	}
 
+	if err := internal.ValidateEncoding(opts.Encoder, opts.Digits); err != nil {
+		return nil, err
+	}
+
+	secret, err := internal.PrepareSecret(opts.Secret, opts.SecretSize, opts.Rand)
+	if err != nil {
+		return nil, err
+	}
+
 	// otpauth://totp/Example:alice@google.com?secret=JBSWY3DPEHPK3PXP&issuer=Example
 
 	v := url.Values{}
-	if len(opts.Secret) != 0 {
-		v.Set("secret", b32NoPadding.EncodeToString(opts.Secret))
-	} else {
-		secret := make([]byte, opts.SecretSize)
-		_, err := io.ReadFull(opts.Rand, secret)
-		if err != nil {
-			return nil, err
-		}
-		v.Set("secret", b32NoPadding.EncodeToString(secret))
-	}
+	v.Set("secret", b32NoPadding.EncodeToString(secret))
 
 	v.Set("issuer", opts.Issuer)
 	v.Set("period", strconv.FormatUint(uint64(opts.Period), 10))
 	v.Set("algorithm", opts.Algorithm.String())
 	v.Set("digits", opts.Digits.String())
+	if opts.Encoder != otp.EncoderDefault {
+		v.Set("encoder", string(opts.Encoder))
+	}
 
 	u := url.URL{
 		Scheme:   "otpauth",

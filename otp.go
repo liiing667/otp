@@ -46,6 +46,34 @@ var ErrGenerateMissingIssuer = errors.New("Issuer must be set")
 // When generating a Key, the Account Name must be set.
 var ErrGenerateMissingAccountName = errors.New("AccountName must be set")
 
+// When generating a Key, the secret (caller provided, or requested via
+// SecretSize) does not meet the library minimum of MinSecretSize bytes.
+var ErrWeakSecretSize = errors.New("Secret must be at least MinSecretSize (16 bytes / 128 bits)")
+
+// The encoder requested via GenerateOpts is not recognized.
+var ErrUnsupportedEncoder = errors.New("Unsupported OTP encoder")
+
+// The Digits value is not allowed for the requested encoder.
+var ErrInvalidDigits = errors.New("Invalid number of OTP digits for the selected encoder")
+
+const (
+	// MinSecretSize is the minimum accepted secret length in bytes for keys
+	// created by Generate. RFC 4226 section 4 recommends shared secrets of at
+	// least 128 bits (16 bytes); weaker values are rejected instead of being
+	// silently encoded into an enrollment QR code.
+	MinSecretSize = 16
+
+	// DefaultSecretSize is the secret length in bytes generated when
+	// SecretSize is left unset, shared by both HOTP and TOTP. 160 bits matches
+	// the HMAC-SHA1 key length recommended by RFC 4226 / RFC 6238.
+	DefaultSecretSize = 20
+)
+
+// SteamChars is the 26-character alphabet used by Steam Guard passcodes
+// (EncoderSteam). It is shared by passcode generation and key/URI generation
+// so HOTP and TOTP apply one encoding policy.
+const SteamChars = "23456789BCDFGHJKMNPQRTVWXY"
+
 // Key represents an TOTP or HTOP key.
 type Key struct {
 	orig string
@@ -245,6 +273,8 @@ type Digits int
 const (
 	DigitsSix   Digits = 6
 	DigitsEight Digits = 8
+	// DigitsFive is used by the Steam Guard encoder (EncoderSteam).
+	DigitsFive Digits = 5
 )
 
 // Format converts an integer into the zero-filled size for this Digits.

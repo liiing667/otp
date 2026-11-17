@@ -55,3 +55,15 @@ func TestKeyWithNewLine(t *testing.T) {
 	sec := w.Secret()
 	require.Equal(t, "JBSWY3DPEHPK3PXP", sec)
 }
+
+func TestSteamCharsAlphabet(t *testing.T) {
+	// The Steam alphabet is a 26-character Crockford-style set with no
+	// ambiguous 0/1/A/E/I/L/O/S/U/Z characters; one shared constant backs
+	// passcode generation and key/URI generation.
+	require.Len(t, SteamChars, 26, "Steam alphabet has 26 symbols")
+	for _, c := range []rune{'0', '1', 'A', 'E', 'I', 'L', 'O', 'S', 'U', 'Z'} {
+		require.NotContains(t, SteamChars, string(c), "Steam alphabet excludes ambiguous symbol %q", c)
+	}
+	require.Equal(t, MinSecretSize, 16, "minimum secret is 128 bits")
+	require.Equal(t, DefaultSecretSize, 20, "default secret is 160 bits")
+}
